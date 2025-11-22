@@ -95,7 +95,7 @@ where
             &challenge,
         );
         debug!(?auth_req, "Sending CRAM reply");
-        self.sender.write_all(auth_req.as_bytes()).await.unwrap();
+        self.sender.write_all(auth_req.as_bytes()).await?;
 
         response.clear();
         recver.read_line(&mut response).await?;
@@ -377,5 +377,52 @@ impl StartRequest {
     /// Returns the request as a byte slice.
     pub fn as_bytes(&self) -> &[u8] {
         self.as_str().as_bytes()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+    use tokio::io::{AsyncWrite, BufReader};
+
+    struct FailingWriter;
+
+    impl AsyncWrite for FailingWriter {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "connection closed",
+            )))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_authenticate_write_failure_returns_error() {
+        let input = b"lsg-test\ncram=t7kNhwj4xqR0QYjzFKtBEG2ec2pXJ4FK\n";
+        let mut reader = BufReader::new(&input[..]);
+        let writer = FailingWriter;
+        let mut protocol = Protocol::new(writer);
+        let key = ApiKey::new("test-API________________________".to_string()).unwrap();
+
+        let result = protocol
+            .authenticate(&mut reader, &key, "GLBX.MDP3", false, None, None)
+            .await;
+
+        assert!(result.is_err(), "Expected error when write fails, but got Ok");
     }
 }
